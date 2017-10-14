@@ -9,7 +9,6 @@ from cv_bridge import CvBridge
 from light_classification.tl_classifier import TLClassifier
 from tf import transformations
 from math import cos, sin, sqrt
-import find_stop_pos
 import tf
 import cv2
 import yaml
