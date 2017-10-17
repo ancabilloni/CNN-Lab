@@ -93,7 +93,7 @@ class WaypointUpdater(object):
         else:
             _lookahead = FORWARD_SCAN_WPS
         # Calculate CTE for steering
-        cte_steer, tfpx, tfpy = cte_calc(self.current_ego_pose, self.base_waypoints, _lookahead)
+        cte_steer, tfpx, tfpy = self.cte_calc(self.current_ego_pose, self.base_waypoints, _lookahead)
 
         # Calculate TF distance
         # RED is not negative, everything else is -tfwp
