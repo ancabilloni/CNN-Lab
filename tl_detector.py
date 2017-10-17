@@ -9,6 +9,7 @@ from cv_bridge import CvBridge
 from light_classification.tl_classifier import TLClassifier
 from tf import transformations
 from math import cos, sin, sqrt
+import math
 import tf
 import cv2
 import yaml
@@ -41,8 +42,6 @@ class TLDetector(object):
 
         # Define stopping locations
         self.config = yaml.load(config_string)
- 
-
         # 
         self.upcoming_red_light_pub = rospy.Publisher('/traffic_waypoint', Int32, queue_size=1)
 
@@ -95,57 +94,19 @@ class TLDetector(object):
             self.state = state
         elif self.state_count >= STATE_COUNT_THRESHOLD:
             self.last_state = self.state
-            light_wp = light_wp if state == TrafficLight.RED else -1
+            if state == TrafficLight.RED:
+            	light_wp = light_wp
+            elif state == TrafficLight.GREEN or state == TrafficLight.YELLOW:
+            	light_wp = light_wp*(-1)
+            else:
+            	light_wp = -1
             self.last_wp = light_wp
             self.upcoming_red_light_pub.publish(Int32(light_wp))
         else:
             self.upcoming_red_light_pub.publish(Int32(self.last_wp))
         self.state_count += 1
 
-    def get_closest_waypoint_index(self, pose, waypoints):
-        """ Returns index of the closest waypoint """
-        best_distance = float('inf')
-        best_waypoint_index = 0
-        my_position = pose.position
-
-        for i, waypoint in enumerate(waypoints):
-
-            a_waypoint_position = waypoint.pose.pose.position
-            gap = self.get_distance_between_two_points(my_position, a_waypoint_position)
-
-            if gap < best_distance:
-                best_waypoint_index, best_distance = i, gap
-
-        is_behind = self.is_waypoint_behind_ego_car(pose, waypoints[best_waypoint_index])
-        if is_behind:
-            best_waypoint_index += 1
-        return best_waypoint_index
-
-    def get_distance_between_two_points(self, a, b):
-        """ Returns distance between two points """
-        dx = a.x - b.x
-        dy = a.y - b.y
-        return sqrt(dx * dx + dy * dy)
-
-    def is_waypoint_behind_ego_car(self, pose, waypoint):
-        """ Do transformation that sets origin to the ego car position, oriented along x-axis and
-        return True if the waypoint is behind the ego car,  False if in front
-
-        See Change of basis | Essence of linear algebra, chapter 9 - https://youtu.be/P2LTAUO1TdA
-        """
-        _, _, yaw = self.get_euler(pose)
-        origin_x = pose.position.x
-        origin_y = pose.position.y
-
-        shift_x = waypoint.pose.pose.position.x - origin_x
-        shift_y = waypoint.pose.pose.position.y - origin_y
-
-        x = shift_x * cos(0 - yaw) - shift_y * sin(0 - yaw)
-
-        if x > 0:
-            return False
-        return True
-
+    
     def get_closest_waypoint(self, pose):
         """Identifies the closest path waypoint to the given position
             https://en.wikipedia.org/wiki/Closest_pair_of_points_problem
@@ -192,7 +153,7 @@ class TLDetector(object):
         stop_wp = None
         if(self.pose):
             # car_position = self.get_closest_waypoint(self.pose.pose)
-            stop_wp = self.get_closest_stop_wp(self.pose, self.stop_index, 50)
+            stop_wp = self.get_closest_stop_wp(self.pose, self.stop_index, 100)
 
 
         #TODO find the closest visible traffic light (if one exists)
@@ -205,6 +166,7 @@ class TLDetector(object):
 
             """ Find state with simulator """
             state = self.get_state_in_sim(stop_wp)
+            # state = self.lights[0].state
             return stop_wp, state
         else:
             return -1, TrafficLight.UNKNOWN 
@@ -212,15 +174,69 @@ class TLDetector(object):
         # return -1, TrafficLight.UNKNOWN
 
     #   Find the closest next stopping point 
+
     def get_closest_stop_wp(self, current_pose, stopping_indices, limit_distance):
         stop_wp = None
         car_index = self.get_closest_waypoint_index(current_pose.pose, self.waypoints)
         for indx in stopping_indices:
-            dist = self.get_distance_between_two_points(current_pose.pose.position, self.waypoints[indx].pose.pose.position)
+            dist = self.distance(self.waypoints, car_index, indx)
             if dist < limit_distance and not self.is_waypoint_behind_ego_car(current_pose.pose, self.waypoints[indx]):
                 stop_wp = indx
 
         return stop_wp
+
+    def distance(self, waypoints, wp1, wp2):
+        dist = 0
+        dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2  + (a.z-b.z)**2)
+        for i in range(wp1, wp2+1):
+            dist += dl(waypoints[wp1].pose.pose.position, waypoints[i].pose.pose.position)
+            wp1 = i
+        return dist
+
+    def get_closest_waypoint_index(self, pose, waypoints):
+        """ Returns index of the closest waypoint """
+        best_distance = float('inf')
+        best_waypoint_index = 0
+        my_position = pose.position
+
+        for i, waypoint in enumerate(waypoints):
+
+            a_waypoint_position = waypoint.pose.pose.position
+            gap = self.get_distance_between_two_points(my_position, a_waypoint_position)
+
+            if gap < best_distance:
+                best_waypoint_index, best_distance = i, gap
+
+        is_behind = self.is_waypoint_behind_ego_car(pose, waypoints[best_waypoint_index])
+        if is_behind:
+            best_waypoint_index += 1
+        return best_waypoint_index
+
+    def get_distance_between_two_points(self, a, b):
+        """ Returns distance between two points """
+        dx = a.x - b.x
+        dy = a.y - b.y
+        return sqrt(dx * dx + dy * dy)
+
+    def is_waypoint_behind_ego_car(self, pose, waypoint):
+        """ Do transformation that sets origin to the ego car position, oriented along x-axis and
+        return True if the waypoint is behind the ego car,  False if in front
+
+        See Change of basis | Essence of linear algebra, chapter 9 - https://youtu.be/P2LTAUO1TdA
+        """
+        _, _, yaw = self.get_euler(pose)
+        origin_x = pose.position.x
+        origin_y = pose.position.y
+
+        shift_x = waypoint.pose.pose.position.x - origin_x
+        shift_y = waypoint.pose.pose.position.y - origin_y
+
+        x = shift_x * cos(0 - yaw) - shift_y * sin(0 - yaw)
+
+        if x > 0:
+            return False
+        return True
+
 
     """ Use traffic pose and state from simulator to test """
     def get_state_in_sim(self, stop_wp):

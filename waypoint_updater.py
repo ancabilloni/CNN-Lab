@@ -13,8 +13,7 @@ import numpy as np
 
 FORWARD_SCAN_WPS = 200
 MPS = 0.44704 # is 1 MPH
-MIN_VEL = 0.001
-MAX_VEL = 11.111
+MIN_VEL = -0.01
 STOP = 0
 GO = 1
 DECEL = 2
@@ -65,7 +64,7 @@ class WaypointUpdater(object):
         self.frame_id = None
         self.tlwp = 0
         self.action = GO
-        self.i = 0
+        self.max_vel = 11.11111
 
         self.loop()
 
@@ -80,6 +79,7 @@ class WaypointUpdater(object):
 
             if len(self.base_waypoints) > FORWARD_SCAN_WPS:
 	            car_index = self.get_closest_waypoint_index(self.current_ego_pose, self.base_waypoints)
+	            
 
 	            # lookahead_waypoints = self.get_next_waypoints(self.base_waypoints, car_index, FORWARD_SCAN_WPS)
 	            lookahead_waypoints = self.get_waypoints(car_index)
@@ -106,20 +106,27 @@ class WaypointUpdater(object):
 
         # Calculate TF distance
         # RED is not negative, everything else is -tfwp
+        cte_tl = None
         if self.tlwp > 0:
             cte_tl = self.distance(self.base_waypoints, current_wp, self.tlwp)
-        else:
-            # cte_tl = -self.distance(self.base_waypoints, current_wp, -self.tlwp)
-            # if (cte_tl < -16) and ( cte_tl > -self.current_linear_velocity*2) : # more than 20 m away from Green light and take less than 2 sec to pass waypoint
-            cte_tl = None
-
+        elif self.tlwp < -1:
+            cte_tl = -self.distance(self.base_waypoints, current_wp, self.tlwp*(-1))
+            if cte_tl > -16.0:
+            	cte_tl = None
 
         # Here goes finding the decision of what to do with the tf distance #
         if (cte_tl is not None) and (cte_tl < 5.0) and (self.current_linear_velocity < 1.0*MPS):
             self.action = STOP
 
-        elif (cte_tl is not None) and (cte_tl < 50.0):
+        # elif (cte_tl is not None) and ((current_wp + FORWARD_SCAN_WPS) < len(self.base_waypoints)):
+        # 	self.action = STOP
+
+        elif (cte_tl is not None) and (cte_tl < 100.0) and (cte_tl > 0.0):
             self.action = DECEL
+
+        elif (cte_tl is not None) and (cte_tl < 0.0) and (self.current_linear_velocity*2 < cte_tl*(-1)):
+        	self.action = DECEL
+        	cte_tl *= -1
 
         # elif (cte_tl is not None) and (cte_tl < 50.0) and (self.current_linear_velocity > 50.0/6.5):
         else: # no within stopping range or current green light and can pass
@@ -140,7 +147,10 @@ class WaypointUpdater(object):
             else:
             	car_to_TL = None
             # rospy.logwarn("Distance: %s", car_to_TL)
-            wp.twist.twist.linear.x = self.set_velocity(self.action, car_to_TL)
+            _velocity = self.set_velocity(self.action, car_to_TL)
+            if(self.current_linear_velocity > (_velocity + 1.0)):
+            	_velocity *= 0.25
+            wp.twist.twist.linear.x = _velocity
             wp.twist.twist.linear.y = 0.0
             wp.twist.twist.linear.z = 0.0
             wp.twist.twist.angular.x = 0.0
@@ -163,37 +173,40 @@ class WaypointUpdater(object):
     def set_velocity(self, action, distance=None):
 
         if action is DECEL and distance is not None:
-            decelcurve = self.velocity_calc(MAX_VEL)
+            decelcurve = self.velocity_calc(self.max_vel)
             velocity = decelcurve(distance)
         elif action is STOP:
             velocity = MIN_VEL
         else:
-            velocity = MAX_VEL
+            velocity = self.max_vel
         return velocity
 
     def velocity_calc(self, max_vel):
-        MIN_VEL = 0.0001
         # Setting points to find deceleration curve
         x = [] # distance axis
         y = [] # velocity axis
-        # Max point @10 s away
+        # Max point @20 s away
         x.append(-max_vel*20)
         y.append(max_vel)
 
-        x.append(-max_vel*10)
+        x.append(-max_vel*12)
         y.append(max_vel)
 
-        # @9 s away
-        x.append(-max_vel*0.8*9)
-        y.append(max_vel*0.8)
+        # @11.5 s away
+        x.append(-max_vel*0.6*11.5)
+        y.append(max_vel*0.6)
 
-        # @8 s away
-        x.append(-max_vel*0.5*8)
-        y.append(max_vel*0.5)
+        # @10 s away
+        x.append(-max_vel*0.4*10)
+        y.append(max_vel*0.4)
 
         # @7 s away
-        x.append(-max_vel*0.3*7)
-        y.append(max_vel*0.3)
+        x.append(-max_vel*0.28*9)
+        y.append(max_vel*0.28)
+
+        # @16m away
+        x.append(-16)
+        y.append(MPS*0.5)
 
         # @10 m away
         x.append(-10)
@@ -201,15 +214,15 @@ class WaypointUpdater(object):
 
         # @5 m away
         x.append(-5)
-        y.append(MPS*0.5)
+        y.append(MPS*0.3)
 
         # @0 m away
-        x.append(0)
-        y.append(-0.02)
+        x.append(0.)
+        y.append(MIN_VEL)
 
         # @ after traffic light, all points are zeros
         x.append(max_vel*20)
-        y.append(-0.02)
+        y.append(MIN_VEL)
 
         decel_curve = np.polyfit(x, y, 3)
         decelcurve = np.poly1d(decel_curve)
@@ -250,8 +263,10 @@ class WaypointUpdater(object):
             shift_x = waypoints[car_index + i].pose.pose.position.x - origin_x
             shift_y = waypoints[car_index + i].pose.pose.position.y - origin_y
 
-            x = shift_x * cos(0 - yaw) - shift_y * sin(0 - yaw)
-            y = shift_x * sin(0 - yaw) + shift_y * cos(0 - yaw)
+            # x = shift_x * cos(0 - yaw) - shift_y * sin(0 - yaw)
+            # y = shift_x * sin(0 - yaw) + shift_y * cos(0 - yaw)
+            x = shift_x * cos(yaw) - shift_y * sin(yaw)
+            y = shift_x * sin(yaw) + shift_y * cos(yaw)
             #rospy.logwarn("i %s - x_coord : %s", i, x)
             #rospy.logwarn("i %s - y_coord : %s", i, y)
 
@@ -357,7 +372,6 @@ class WaypointUpdater(object):
     def traffic_cb(self, message):
         # TODO: Callback for /traffic_waypoint message. Implemented.
         self.tlwp = message.data
-        self.i += 1
 
     def obstacle_cb(self, message):
         # TODO: Callback for /obstacle_waypoint message. We will implement it later
